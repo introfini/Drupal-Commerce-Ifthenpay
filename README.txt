@@ -1,4 +1,4 @@
-Commerce RBS Payment
+Commerce Ifthenpay (Referências Multibanco)
 ===============
 
 Description
