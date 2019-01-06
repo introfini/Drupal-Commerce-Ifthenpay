@@ -11,7 +11,7 @@ use Drupal\Core\Form\FormStateInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Drupal\Core\Url;
 use Symfony\Component\HttpFoundation\Response;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
+use InvalidArgumentException;
 
 /**
  * Provides the Ifthenpay payment gateway.
@@ -22,6 +22,10 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
  *   display_label = "Ifthenpay",
  *   modes = {
  *     "n/a" = @Translation("N/A"),
+ *   },
+ *   forms = {
+ *     "add-payment" = "Drupal\commerce_ifthenpay\PluginForm\ManualPaymentAddForm",
+ *     "receive-payment" = "Drupal\commerce_ifthenpay\PluginForm\PaymentReceiveForm",
  *   },
  *   payment_type = "payment_manual",
  * )
@@ -63,6 +67,14 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
       '#default_value' => $this->configuration['multibanco_chaveAntiPhishing'],
       '#required' => TRUE,
     ];
+
+    $form['multibanco_chaveAntiPhishing'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Chave AntiPhishing'),
+      '#default_value' => $this->configuration['multibanco_chaveAntiPhishing'],
+      '#required' => TRUE,
+    ];
+
     $form['instructions'] = [
       '#type' => 'text_format',
       '#title' => $this->t('Payment instructions'),
@@ -98,11 +110,7 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
     $order_value = $amount->getNumber();
     $mb_ref = self::generateMbRef($this->configuration['multibanco_entidade'], $this->configuration['multibanco_subentidade'], $order_id, $order_value);
 
-    $callback_url = $this->getNotifyUrl()->toString();
 
-    //Set the Bultibanco Referência as the Payment Remote ID
-    $payment->setRemoteId(str_replace(' ', '', $mb_ref));
-    $payment->save();
 
     if (!empty($this->configuration['instructions']['value'])) {
       $instructions['intro'] = [
@@ -115,15 +123,16 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
     $instructions['mb_ref'] = [ '#markup' =>
                     '<p>' . t('Entidade: ') . $this->configuration['multibanco_entidade'] .'</p>' .
                     '<p>' . t('Referência: ') . $mb_ref . '</p>' .
-                    '<p>' . t('Montante: ') . $amount . '</p>',
+                    '<p>' . t('Montante: ') . $amount . $this->getNotifyUrl()->toString(). '</p>',
     ];
 
 
+    //Set the Bultibanco Referência as the Payment Remote ID
+    $payment->setRemoteId(str_replace(' ', '', $mb_ref));
 
-    /** @var \Drupal\commerce_order\Entity\Order $order */
-/*    $order = $payment->getOrder();
-    $order->getState()->applyTransitionById('draft');
-    $order->save();*/
+    //Set the Payment state to 'authorization'
+    //$payment->setState('authorization');
+    //$payment->save();
 
     return $instructions;
   }
@@ -146,13 +155,6 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
       'plugin_form' => 'void-payment',
       'access' => $payment_state == 'pending',
     ];
-    $operations['refund'] = [
-      'title' => $this->t('Refund'),
-      'page_title' => $this->t('Refund payment'),
-      'plugin_form' => 'refund-payment',
-      'access' => in_array($payment_state, ['completed', 'partially_refunded']),
-    ];
-
     return $operations;
   }
 
@@ -183,7 +185,8 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
    * {@inheritdoc}
    */
   public function voidPayment(PaymentInterface $payment) {
-    //Doesn't applies.
+    $payment->state = 'voided';
+    $payment->save();
   }
 
   /**
@@ -209,28 +212,10 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
   }
 
   /**
-   * Function coming directly from the vendor Ifthenpay with the logic to generate the referências multibanco 9 digit code
+   * Function coming directly from the vendor Ifthenpay (but with some modifications) with the logic to generate the referências multibanco 9 digit code
    */
   public static function generateMbRef($ent_id, $subent_id, $order_id, $order_value)
   {
-    if(strlen($ent_id)<5){
-      echo "Lamentamos mas tem de indicar uma entidade válida";
-      return;
-    }else if(strlen($ent_id)>5){
-      echo "Lamentamos mas tem de indicar uma entidade válida";
-      return;
-    }if(strlen($subent_id)==0){
-    echo "Lamentamos mas tem de indicar uma subentidade válida";
-    return;
-  }else if(strlen($subent_id)==1){
-    $subent_id='00'.$subent_id;
-  }else if(strlen($subent_id)==2){
-    $subent_id='0'.$subent_id;
-  }else if(strlen($subent_id)>3){
-    echo "Lamentamos mas tem de indicar uma entidade válida";
-    return;
-  }
-
     $chk_val = 0;
 
     $order_id ="0000".$order_id;
@@ -243,21 +228,11 @@ class Ifthenpay extends PaymentGatewayBase implements ManualPaymentGatewayInterf
     $order_id = substr($order_id, (strlen($order_id) - 4), strlen($order_id));
 
 
-    if ($order_value < 1){
-      echo "Lamentamos mas é impossível gerar uma referência MB para valores inferiores a 1 Euro";
-      return;
+    if ($order_value < 1 || $order_value >= 1000000){
+      throw new InvalidArgumentException('That order amount is not a valid amount.');
     }
-    if ($order_value >= 1000000){
-      echo "<b>AVISO:</b> Pagamento fraccionado por exceder o valor limite para pagamentos no sistema Multibanco<br>";
-    }
-    while ($order_value >= 1000000){
-      GenerateMbRef($order_id++, 999999.99);
-      $order_value -= 999999.99;
-    }
-
 
     //cálculo dos check digits
-
 
     $chk_str = sprintf('%05u%03u%04u%08u', $ent_id, $subent_id, $order_id, round($order_value*100));
 
